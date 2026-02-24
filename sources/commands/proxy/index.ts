@@ -1,12 +1,18 @@
 import type { Command, CommandContext } from "@/commands/types";
 import { requireClientToken } from "@/client/clientApi";
+import {
+  DEFAULT_PROXY_SOCKET_PATH,
+  expandHomePath,
+} from "@/utils/proxyAddress";
+import { existsSync, unlinkSync } from "node:fs";
 
-const USAGE = "bee proxy [--port N]";
+const USAGE = "bee proxy [--port N]\nbee proxy --socket [path]";
 const DEFAULT_PORT = 8787;
 const MAX_PORT_ATTEMPTS = 50;
 
 type ProxyOptions = {
   port?: number;
+  socketPath?: string;
 };
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -30,8 +36,9 @@ export const proxyCommand: Command = {
   },
 };
 
-function parseProxyArgs(args: readonly string[]): ProxyOptions {
+export function parseProxyArgs(args: readonly string[]): ProxyOptions {
   let port: number | undefined;
+  let socketPath: string | undefined;
   const positionals: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
@@ -54,6 +61,17 @@ function parseProxyArgs(args: readonly string[]): ProxyOptions {
       continue;
     }
 
+    if (arg === "--socket") {
+      const nextValue = args[i + 1];
+      if (nextValue === undefined || nextValue.startsWith("-")) {
+        socketPath = DEFAULT_PROXY_SOCKET_PATH;
+      } else {
+        socketPath = nextValue;
+        i += 1;
+      }
+      continue;
+    }
+
     if (arg.startsWith("-")) {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -65,24 +83,43 @@ function parseProxyArgs(args: readonly string[]): ProxyOptions {
     throw new Error(`Unexpected arguments: ${positionals.join(" ")}`);
   }
 
+  if (port !== undefined && socketPath !== undefined) {
+    throw new Error("--port and --socket cannot be used together");
+  }
+
   const options: ProxyOptions = {};
   if (port !== undefined) {
     options.port = port;
   }
+  if (socketPath !== undefined) {
+    options.socketPath = socketPath;
+  }
   return options;
 }
 
-async function startProxy(
+export async function startProxy(
   context: CommandContext,
   options: ProxyOptions
-): Promise<void> {
+): Promise<ReturnType<typeof Bun.serve>> {
   const token = await requireClientToken(context);
-  const port = await pickPort(options.port);
-  const hostname = "127.0.0.1";
+  if (!token) {
+    throw new Error('Not logged in. Run "bee login" first.');
+  }
 
-  Bun.serve({
-    hostname,
-    port,
+  const socketPath = options.socketPath ? expandHomePath(options.socketPath) : undefined;
+  if (socketPath && existsSync(socketPath)) {
+    unlinkSync(socketPath);
+  }
+
+  const listenOptions = socketPath
+    ? { unix: socketPath }
+    : {
+      hostname: "127.0.0.1",
+      port: await pickPort(options.port),
+    };
+
+  const server = Bun.serve({
+    ...listenOptions,
     fetch: async (request) => {
       const url = new URL(request.url);
       if (!url.pathname.startsWith("/v1")) {
@@ -123,9 +160,17 @@ async function startProxy(
   });
 
   const baseUrl = context.client.baseUrl;
-  console.log(`Proxy listening on http://${hostname}:${port}`);
+  if (socketPath) {
+    console.log(`Proxy listening on unix://${socketPath}`);
+  } else {
+    const hostname = (listenOptions as { hostname: string }).hostname;
+    const port = (listenOptions as { port: number }).port;
+    console.log(`Proxy listening on http://${hostname}:${port}`);
+  }
   console.log(`Forwarding /v1 requests to ${baseUrl}`);
   console.log("Press Ctrl+C to stop.");
+
+  return server;
 }
 
 async function pickPort(requested?: number): Promise<number> {

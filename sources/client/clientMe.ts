@@ -15,7 +15,7 @@ const MAX_BACKOFF_MS = 30000;
 
 export async function fetchClientMe(
   context: CommandContext,
-  token: string
+  token?: string
 ): Promise<ClientUser> {
   const response = await fetchWithRetry(context, token);
 
@@ -44,18 +44,21 @@ export async function fetchClientMe(
 
 async function fetchWithRetry(
   context: CommandContext,
-  token: string
+  token?: string
 ): Promise<Response> {
   let lastError: Error | null = null;
   let lastErrorType: "network" | "server" | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
+      const headers = new Headers();
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+
       const response = await context.client.fetch("/v1/me", {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers,
       });
 
       if (response.status >= 500 && response.status < 600) {

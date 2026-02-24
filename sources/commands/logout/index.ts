@@ -1,5 +1,5 @@
 import type { Command, CommandContext } from "@/commands/types";
-import { clearToken } from "@/secureStore";
+import { clearProxyConfig, clearToken } from "@/secureStore";
 
 const USAGE = "bee logout";
 
@@ -19,6 +19,7 @@ async function handleLogout(
   if (args.length > 0) {
     throw new Error("logout does not accept arguments.");
   }
+  await clearProxyConfig(context.env);
   await clearToken(context.env);
   console.log("Logged out.");
 }

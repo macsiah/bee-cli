@@ -1,5 +1,5 @@
 import type { Command, CommandContext } from "@/commands/types";
-import { loadToken } from "@/secureStore";
+import { requireClientToken } from "@/client/clientApi";
 import Handlebars from "handlebars";
 
 const SUPPORTED_EVENT_TYPES = [
@@ -128,10 +128,7 @@ async function handleStream(
     options: StreamOptions,
     context: CommandContext
 ): Promise<void> {
-    const token = await loadToken(context.env);
-    if (!token) {
-        throw new Error('Not logged in. Run "bee login" first.');
-    }
+    const token = await requireClientToken(context);
 
     const params = new URLSearchParams();
     if (options.types && options.types.length > 0 && !options.types.includes("all")) {
@@ -161,12 +158,14 @@ async function handleStream(
     });
 
     try {
+        const headers = new Headers({ Accept: "text/event-stream" });
+        if (token) {
+            headers.set("Authorization", `Bearer ${token}`);
+        }
+
         const response = await context.client.fetch(path, {
             method: "GET",
-            headers: {
-                Authorization: `Bearer ${token}`,
-                Accept: "text/event-stream",
-            },
+            headers,
             signal: abortController.signal,
         });
 

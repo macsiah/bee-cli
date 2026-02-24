@@ -5,13 +5,23 @@ import { join } from "node:path";
 
 const TOKEN_SERVICE = "bee-cli";
 
+function readEnv(name: string): string | undefined {
+  return process.env[name] ?? Bun.env[name];
+}
+
 // File-based fallback directory
-const CONFIG_DIR = join(homedir(), ".bee");
-const getTokenFilePath = (env: Environment) => join(CONFIG_DIR, `token-${env}`);
-const getPairingFilePath = (env: Environment) => join(CONFIG_DIR, `pairing-${env}.json`);
+const DEFAULT_CONFIG_DIR = join(homedir(), ".bee");
+const getConfigDir = () => readEnv("BEE_CONFIG_DIR") ?? DEFAULT_CONFIG_DIR;
+const getTokenFilePath = (env: Environment) => join(getConfigDir(), `token-${env}`);
+const getPairingFilePath = (env: Environment) => join(getConfigDir(), `pairing-${env}.json`);
+const getProxyConfigFilePath = (env: Environment) => join(getConfigDir(), `proxy-${env}.json`);
 
 // Switches to file fallback when libsecret is unavailable
-let useFileFallback = false;
+let useFileFallback = readEnv("BEE_FORCE_FILE_STORE") === "1";
+
+function isFileFallbackEnabled(): boolean {
+  return useFileFallback || readEnv("BEE_FORCE_FILE_STORE") === "1";
+}
 
 function tokenKey(env: Environment): { service: string; name: string } {
   return { service: TOKEN_SERVICE, name: `token:${env}` };
@@ -40,8 +50,9 @@ function handleKeychainError(err: unknown): void {
 }
 
 function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { mode: 0o700, recursive: true });
+  const configDir = getConfigDir();
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { mode: 0o700, recursive: true });
   }
 }
 
@@ -67,7 +78,7 @@ function clearTokenFromFile(env: Environment): void {
 }
 
 export async function loadToken(env: Environment): Promise<string | null> {
-  if (!useFileFallback) {
+  if (!isFileFallbackEnabled()) {
     try {
       const value = await Bun.secrets.get(tokenKey(env));
       if (typeof value === "string") {
@@ -82,7 +93,7 @@ export async function loadToken(env: Environment): Promise<string | null> {
 }
 
 export async function saveToken(env: Environment, token: string): Promise<void> {
-  if (!useFileFallback) {
+  if (!isFileFallbackEnabled()) {
     try {
       await Bun.secrets.set({ ...tokenKey(env), value: token });
       return;
@@ -94,7 +105,7 @@ export async function saveToken(env: Environment, token: string): Promise<void> 
 }
 
 export async function clearToken(env: Environment): Promise<void> {
-  if (!useFileFallback) {
+  if (!isFileFallbackEnabled()) {
     try {
       await Bun.secrets.delete(tokenKey(env));
     } catch (err) {
@@ -143,7 +154,7 @@ function parseJson<T>(value: string): T | null {
 }
 
 export async function loadPairingState(env: Environment): Promise<PairingState | null> {
-  if (!useFileFallback) {
+  if (!isFileFallbackEnabled()) {
     try {
       const value = await Bun.secrets.get(pairingStateKey(env));
       if (typeof value === "string" && value.trim().length > 0) {
@@ -157,7 +168,7 @@ export async function loadPairingState(env: Environment): Promise<PairingState |
 }
 
 export async function savePairingState(env: Environment, state: PairingState): Promise<void> {
-  if (!useFileFallback) {
+  if (!isFileFallbackEnabled()) {
     try {
       await Bun.secrets.set({ ...pairingStateKey(env), value: JSON.stringify(state) });
       return;
@@ -169,7 +180,7 @@ export async function savePairingState(env: Environment, state: PairingState): P
 }
 
 export async function clearPairingState(env: Environment): Promise<void> {
-  if (!useFileFallback) {
+  if (!isFileFallbackEnabled()) {
     try {
       await Bun.secrets.delete(pairingStateKey(env));
     } catch (err) {
@@ -178,4 +189,52 @@ export async function clearPairingState(env: Environment): Promise<void> {
   }
   // Always clear file-based storage to remove any orphaned credentials
   clearPairingStateFromFile(env);
+}
+
+export type ProxyConfig = {
+  address: string;
+};
+
+function loadProxyConfigFromFile(env: Environment): ProxyConfig | null {
+  const path = getProxyConfigFilePath(env);
+  if (!existsSync(path)) return null;
+
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as
+      | { address?: unknown }
+      | null;
+    if (!parsed || typeof parsed.address !== "string") {
+      return null;
+    }
+    const address = parsed.address.trim();
+    return address.length > 0 ? { address } : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveProxyConfigToFile(env: Environment, config: ProxyConfig): void {
+  ensureConfigDir();
+  writeFileSync(getProxyConfigFilePath(env), JSON.stringify(config), { mode: 0o600 });
+}
+
+function clearProxyConfigFromFile(env: Environment): void {
+  const path = getProxyConfigFilePath(env);
+  if (existsSync(path)) unlinkSync(path);
+}
+
+export async function loadProxyConfig(env: Environment): Promise<ProxyConfig | null> {
+  return loadProxyConfigFromFile(env);
+}
+
+export async function saveProxyConfig(env: Environment, config: ProxyConfig): Promise<void> {
+  const address = config.address.trim();
+  if (!address) {
+    throw new Error("Proxy address cannot be empty.");
+  }
+  saveProxyConfigToFile(env, { address });
+}
+
+export async function clearProxyConfig(env: Environment): Promise<void> {
+  clearProxyConfigFromFile(env);
 }

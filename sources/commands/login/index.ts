@@ -1,8 +1,11 @@
 import type { Command, CommandContext } from "@/commands/types";
 import type { Environment } from "@/environment";
+import { createDeveloperClient, createProxyClient } from "@/client";
 import {
   loadToken,
   saveToken,
+  saveProxyConfig,
+  loadProxyConfig,
   loadPairingState,
   savePairingState,
   clearPairingState,
@@ -15,9 +18,11 @@ import {
 } from "@/utils/appPairingCrypto";
 import { renderQrCode } from "@/utils/qrCode";
 import { fetchClientMe } from "@/client/clientMe";
+import { isSocketPath, normalizeProxyAddress } from "@/utils/proxyAddress";
 
 type LoginOptions = {
   token?: string;
+  proxy?: string;
   tokenStdin: boolean;
   qr: boolean;
 };
@@ -27,6 +32,7 @@ const USAGE = [
   "bee login --qr",
   "bee login --token <token>",
   "bee login --token-stdin",
+  "bee login --proxy <url|socket>",
 ].join("\n");
 
 export const loginCommand: Command = {
@@ -44,9 +50,30 @@ async function handleLogin(
 ): Promise<void> {
   const options = parseLoginArgs(args);
 
-  if (options.tokenStdin && options.token) {
-    throw new Error("Use either --token or --token-stdin, not both.");
+  if (context.client.isProxy && !options.proxy && !options.token && !options.tokenStdin) {
+    try {
+      const user = await fetchClientMe(context);
+      printExistingProxyMessage(user, context.client.proxyAddress ?? "configured proxy");
+      return;
+    } catch {
+      throw new Error(
+        "Proxy authentication is configured but not reachable. Run 'bee logout' to clear it first."
+      );
+    }
   }
+
+  if (options.proxy) {
+    const address = normalizeProxyAddress(options.proxy);
+    const user = await validateProxyConnection(context.env, address);
+    await saveProxyConfig(context.env, { address });
+    printProxySuccessMessage(user, address);
+    return;
+  }
+
+  const apiContext: CommandContext = {
+    ...context,
+    client: createDeveloperClient(context.env),
+  };
 
   let token = options.token;
   if (options.tokenStdin) {
@@ -58,11 +85,18 @@ async function handleLogin(
   }
 
   if (!token) {
+    const existingProxy = await loadProxyConfig(context.env);
+    if (existingProxy) {
+      throw new Error(
+        "Proxy authentication is configured. Run 'bee logout' first if you want to switch to token login."
+      );
+    }
+
     // Check if already authenticated
     const existingToken = await loadToken(context.env);
     if (existingToken) {
       try {
-        const user = await fetchClientMe(context, existingToken);
+        const user = await fetchClientMe(apiContext, existingToken);
         const name = [user.first_name, user.last_name].filter(Boolean).join(" ");
         console.log("");
         console.log(`You're already connected to Bee as ${name}.`);
@@ -78,7 +112,7 @@ async function handleLogin(
       }
     }
 
-    token = await loginWithAppPairing(context, options.qr);
+    token = await loginWithAppPairing(apiContext, options.qr);
   }
 
   if (!token) {
@@ -87,7 +121,7 @@ async function handleLogin(
 
   token = token.trim();
 
-  const user = await fetchClientMe(context, token);
+  const user = await fetchClientMe(apiContext, token);
 
   await saveToken(context.env, token);
 
@@ -107,8 +141,31 @@ function printSuccessMessage(user: {
   console.log("Everything is set up and I'm ready to help you!");
 }
 
-function parseLoginArgs(args: readonly string[]): LoginOptions {
+function printProxySuccessMessage(
+  user: { first_name: string; last_name: string | null },
+  address: string
+): void {
+  const name = [user.first_name, user.last_name].filter(Boolean).join(" ");
+  console.log("");
+  console.log(`Connected to Bee via proxy (${address}) as ${name}.`);
+  console.log("");
+  console.log("Proxy authentication is now active for all commands.");
+}
+
+function printExistingProxyMessage(
+  user: { first_name: string; last_name: string | null },
+  address: string
+): void {
+  const name = [user.first_name, user.last_name].filter(Boolean).join(" ");
+  console.log("");
+  console.log(`You're already connected to Bee via proxy (${address}) as ${name}.`);
+  console.log("");
+  console.log("Run 'bee logout' to clear proxy auth before switching login mode.");
+}
+
+export function parseLoginArgs(args: readonly string[]): LoginOptions {
   let token: string | undefined;
+  let proxy: string | undefined;
   let tokenStdin = false;
   let qr = false;
   const positionals: string[] = [];
@@ -134,6 +191,16 @@ function parseLoginArgs(args: readonly string[]): LoginOptions {
       continue;
     }
 
+    if (arg === "--proxy") {
+      const value = args[i + 1];
+      if (value === undefined) {
+        throw new Error("--proxy requires a value");
+      }
+      proxy = value;
+      i += 1;
+      continue;
+    }
+
     if (arg === "--qr") {
       qr = true;
       continue;
@@ -150,11 +217,97 @@ function parseLoginArgs(args: readonly string[]): LoginOptions {
     throw new Error(`Unexpected arguments: ${positionals.join(" ")}`);
   }
 
+  if (token && tokenStdin) {
+    throw new Error("Use either --token or --token-stdin, not both.");
+  }
+  if (proxy && token) {
+    throw new Error("Use either --proxy or --token, not both.");
+  }
+  if (proxy && tokenStdin) {
+    throw new Error("Use either --proxy or --token-stdin, not both.");
+  }
+
   const options: LoginOptions = { tokenStdin, qr };
   if (token !== undefined) {
     options.token = token;
   }
+  if (proxy !== undefined) {
+    options.proxy = proxy;
+  }
   return options;
+}
+
+export async function validateProxyConnection(
+  env: Environment,
+  address: string
+): Promise<{
+  id: number;
+  first_name: string;
+  last_name: string | null;
+}> {
+  const normalized = normalizeProxyAddress(address);
+  if (!normalized) {
+    throw new Error("Proxy address cannot be empty.");
+  }
+
+  if (!isSocketPath(normalized)) {
+    let parsed: URL;
+    try {
+      parsed = new URL(normalized);
+    } catch {
+      throw new Error("Proxy URL must be a valid http:// or https:// URL.");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("Proxy URL must start with http:// or https://.");
+    }
+  }
+
+  const proxyContext: CommandContext = {
+    env,
+    client: createProxyClient(env, { address: normalized }),
+  };
+
+  const response = await proxyContext.client.fetch("/v1/me", {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(5000),
+  });
+
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
+        ? payload.error
+        : `Proxy check failed with status ${response.status}.`;
+    throw new Error(message);
+  }
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    typeof (payload as { id?: unknown }).id !== "number" ||
+    typeof (payload as { first_name?: unknown }).first_name !== "string"
+  ) {
+    throw new Error("Proxy check failed: invalid /v1/me response.");
+  }
+
+  const userPayload = payload as {
+    id: number;
+    first_name: string;
+    last_name?: unknown;
+  };
+
+  return {
+    id: userPayload.id,
+    first_name: userPayload.first_name,
+    last_name: typeof userPayload.last_name === "string" ? userPayload.last_name : null,
+  };
 }
 
 async function readTokenFromStdin(): Promise<string> {

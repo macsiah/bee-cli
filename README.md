@@ -75,7 +75,7 @@ for await (const event of stream.events) {
 
 By default, data commands return markdown. Use `--json` to print raw JSON.
 
-- `login` - Log in interactively, or with `--token <token>` / `--token-stdin`.
+- `login` - Log in interactively, with `--token <token>` / `--token-stdin`, or via proxy with `--proxy <url|socket>`.
 - `status` - Show current authentication status.
 - `logout` - Log out and clear stored credentials.
 
@@ -120,11 +120,41 @@ By default, data commands return markdown. Use `--json` to print raw JSON.
 
 - `sync` - Export your Bee data to markdown files for AI agents. Options: `--output <dir>`, `--recent-days N`, `--only <facts|todos|daily|conversations>`.
 
-- `proxy` - Start a local HTTP proxy for the Bee API. Options: `--port N`.
+- `proxy` - Start a local Bee API proxy. Options: `--port N`, `--socket [path]`.
 
 - `ping` - Run a quick connectivity check. Use `--count N` to repeat.
 
 - `version` - Print the CLI version. Use `--json` for JSON output.
+
+## Proxy Authentication
+
+Use proxy auth when another trusted local process handles Bee API authentication and this CLI should send requests through it.
+
+### Configure Proxy Mode
+
+```bash
+# HTTP proxy
+bee login --proxy http://127.0.0.1:8787
+
+# Unix socket proxy
+bee login --proxy ~/.bee/proxy.sock
+```
+
+This saves proxy config to `~/.bee/proxy-{env}.json`. When proxy config exists, it takes precedence over stored token auth.
+
+### Start Local Proxy Server
+
+```bash
+# TCP listener (default auto-picks from 8787)
+bee proxy
+bee proxy --port 8787
+
+# Unix socket listener (default: ~/.bee/proxy.sock)
+bee proxy --socket
+bee proxy --socket /tmp/bee-proxy.sock
+```
+
+In socket mode, the CLI removes stale socket files before listening.
 
 ## Stream Events
 

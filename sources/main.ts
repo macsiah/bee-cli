@@ -1,5 +1,4 @@
-import type { Command, CommandContext } from "@/commands/types";
-import { createDeveloperClient } from "@/client";
+import type { Command } from "@/commands/types";
 import { conversationsCommand } from "@/commands/conversations";
 import { dailyCommand } from "@/commands/daily";
 import { changedCommand } from "@/commands/changed";
@@ -19,6 +18,7 @@ import { todosCommand } from "@/commands/todos";
 import { todayCommand } from "@/commands/today";
 import { versionCommand } from "@/commands/version";
 import type { Environment } from "@/environment";
+import { createCommandContext } from "@/context";
 
 const BIN = "bee";
 
@@ -83,7 +83,6 @@ async function runCli(): Promise<void> {
   const parsed = parseGlobalArgs(process.argv.slice(2));
   const args = parsed.args;
   const firstArg = args[0];
-  const context = createContext(parsed.env);
 
   if (!firstArg || isHelpFlag(firstArg)) {
     printHelp();
@@ -91,6 +90,7 @@ async function runCli(): Promise<void> {
   }
 
   if (firstArg === "--version" || firstArg === "-v") {
+    const context = await createCommandContext(parsed.env);
     await versionCommand.run([], context);
     return;
   }
@@ -112,6 +112,7 @@ async function runCli(): Promise<void> {
   }
 
   try {
+    const context = await createCommandContext(parsed.env);
     await command.run(commandArgs, context);
   } catch (error) {
     if (error instanceof Error) {
@@ -139,11 +140,4 @@ function parseGlobalArgs(args: readonly string[]): { env: Environment; args: str
   }
 
   return { env, args: remaining };
-}
-
-function createContext(env: Environment): CommandContext {
-  return {
-    env,
-    client: createDeveloperClient(env),
-  };
 }

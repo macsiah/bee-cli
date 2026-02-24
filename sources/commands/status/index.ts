@@ -22,16 +22,25 @@ async function handleStatus(
     throw new Error("status does not accept arguments.");
   }
 
-  const token = await loadToken(context.env);
   const config = getEnvironmentConfig(context.env);
+  const proxyAddress = context.client.isProxy ? context.client.proxyAddress : undefined;
 
-  if (!token) {
-    console.log("Not logged in.");
-    console.log(`API: ${config.label} (${config.apiUrl})`);
+  console.log(`API: ${config.label} (${config.apiUrl})`);
+
+  if (proxyAddress) {
+    console.log(`Connected via proxy: ${proxyAddress}`);
+    const user = await fetchClientMe(context);
+    const name = [user.first_name, user.last_name].filter(Boolean).join(" ");
+    console.log(`Verified as ${name} (id ${user.id}).`);
     return;
   }
 
-  console.log(`API: ${config.label} (${config.apiUrl})`);
+  const token = await loadToken(context.env);
+  if (!token) {
+    console.log("Not logged in.");
+    return;
+  }
+
   console.log(`Token: ${maskToken(token)}`);
 
   const user = await fetchClientMe(context, token);

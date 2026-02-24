@@ -13,7 +13,11 @@ type JsonRequestInit = RequestInit & {
   json?: JsonValue;
 };
 
-export async function requireClientToken(context: CommandContext): Promise<string> {
+export async function requireClientToken(context: CommandContext): Promise<string | null> {
+  if (context.client.isProxy) {
+    return null;
+  }
+
   const token = await loadToken(context.env);
   if (!token) {
     throw new Error('Not logged in. Run "bee login" first.');
@@ -28,7 +32,9 @@ export async function requestClientJson(
 ): Promise<unknown> {
   const token = await requireClientToken(context);
   const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${token}`);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
 
   let body = init.body;
   if (init.json !== undefined) {
